@@ -85,15 +85,14 @@ function M.set_state(bufnr, state)
     if bp then
       bp.state = state
     end
-    if not state.verified then
-      vim.fn.sign_place(
-        sign.id,
-        ns,
-        'DapBreakpointRejected',
-        bufnr,
-        { lnum = state.line; priority = 21; }
-      )
-    end
+    -- Always refresh the sign to reflect current verification/condition/log state
+    vim.fn.sign_place(
+      sign.id,
+      ns,
+      get_sign_name(bp or { state = state }),
+      bufnr,
+      { lnum = state.line; priority = 21; }
+    )
   end
 end
 

@@ -78,6 +78,85 @@ end
 local Session = {}
 local session_mt = { __index = Session }
 
+-- Prefer local workspace file content over Source request for ESM.
+local function _strip_rel_prefix(p)
+  local s = p or ''
+  -- repeatedly strip ../ and ./
+  local prev
+  repeat
+    prev = s
+    s = s:gsub('^%./', '')
+    s = s:gsub('^%../', '')
+  until s == prev
+  return s
+end
+
+local function _endswith(str, suf)
+  if not str or not suf then return false end
+  if #suf > #str then return false end
+  return str:sub(-#suf) == suf
+end
+
+local function resolve_local_file(session, spath)
+  if not spath or spath == '' then return nil end
+  if spath:match('^file://') then
+    spath = spath:gsub('^file://', '')
+  end
+  local uv_local = vim.uv or vim.loop
+  -- absolute path directly
+  if vim.startswith(spath, '/') or spath:match('^%a:[/\\]') or spath:match('^//') then
+    local st = uv_local.fs_stat(spath)
+    if st and (st.type == 'file' or st.type == 'link') then
+      return spath
+    end
+  end
+  -- First try to resolve relative to likely base dirs (program dir, config.cwd, vim cwd)
+  local bases = {}
+  local program = session.config and session.config.program or nil
+  if type(program) == 'string' and program ~= '' then
+    local pdir = vim.fn.fnamemodify(program, ':p:h')
+    table.insert(bases, pdir)
+  end
+  local cfg_cwd = (session.config and session.config.cwd) or nil
+  if cfg_cwd and cfg_cwd ~= '' then table.insert(bases, cfg_cwd) end
+  local nvim_cwd = vim.fn.getcwd()
+  if not cfg_cwd or cfg_cwd ~= nvim_cwd then table.insert(bases, nvim_cwd) end
+  for _, base in ipairs(bases) do
+    local joined = base .. '/' .. spath
+    local abs = vim.fn.fnamemodify(joined, ':p')
+    local st = uv_local.fs_stat(abs)
+    if st and (st.type == 'file' or st.type == 'link') then
+      return abs
+    end
+  end
+
+  -- try suffix within known buffers and roots
+  local suffix = _strip_rel_prefix(spath)
+  -- open buffers first
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local name = vim.api.nvim_buf_get_name(b)
+    if name ~= '' and _endswith(name, '/' .. suffix) or name == suffix then
+      return name
+    end
+  end
+  for _, root in ipairs(bases) do
+    local matches = vim.fn.globpath(root, '**/' .. suffix, true, true)
+    if type(matches) == 'table' then
+      for _, m in ipairs(matches) do
+        local st = uv_local.fs_stat(m)
+        if st and (st.type == 'file' or st.type == 'link') then
+          return m
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- Utility: resolve adapter-provided relative paths (e.g. "../src/foo.ts")
+-- to an absolute local path using heuristics that work well for ESM.
+-- NOTE: custom adapter-relative path resolution was removed per user request
+
 
 local function json_decode(payload)
   return vim.json.decode(payload, { luanil = { object = true }})
@@ -383,6 +462,10 @@ end
 ---@param line integer
 ---@param column integer
 local function set_cursor(win, line, column)
+  local bufnr = api.nvim_win_get_buf(win)
+  local line_count = api.nvim_buf_line_count(bufnr)
+  log:debug('set_cursor: win=' .. win .. ', buf=' .. bufnr .. ', line=' .. line .. ', column=' .. column .. ', buf_lines=' .. line_count)
+  
   local ok, err = pcall(api.nvim_win_set_cursor, win, { line, column - 1 })
   if ok then
     local curbuf = api.nvim_get_current_buf()
@@ -396,12 +479,13 @@ local function set_cursor(win, line, column)
     local msg = string.format(
       "Adapter reported a frame in buf %d line %s column %s, but: %s. "
       .. "Ensure executable is up2date and if using a source mapping ensure it is correct",
-      api.nvim_win_get_buf(win),
+      bufnr,
       line,
       column,
       err
     )
     utils.notify(msg, vim.log.levels.WARN)
+    log:warn('Failed to set cursor: ' .. msg)
   end
 end
 
@@ -551,16 +635,40 @@ local function source_to_bufnr(session, source)
       return nil
     end
     local scheme = source.path:match('^([a-z]+)://.*')
+    local is_abs = vim.startswith(source.path, '/') or source.path:match('^%a:[/\\]') or source.path:match('^//')
     if scheme then
       return vim.uri_to_bufnr(source.path)
+    elseif not is_abs then
+      -- Avoid turning a relative path like "../src/foo.ts" into "/../src/foo.ts"
+      -- Just create a buffer with the relative name; content will be provided via sourceReference elsewhere when available.
+      local buf = vim.fn.bufadd(source.path)
+      vim.fn.bufload(buf)
+      return buf
     else
-      return vim.uri_to_bufnr(vim.uri_from_fname(source.path))
+      local uri = vim.uri_from_fname(source.path)
+      return vim.uri_to_bufnr(uri)
     end
   end
+  -- Try to show local file content if possible; keep sourceReference for identity
+  if source.path then
+    local local_path = resolve_local_file(session, source.path)
+    if local_path then
+      local uri = vim.uri_from_fname(local_path)
+      return vim.uri_to_bufnr(uri)
+    end
+  end
+
   local co = coroutine.running()
   assert(co, 'Must run in coroutine')
   session:source(source, coresume(co))
-  local _, bufnr = coroutine.yield()
+  local err, bufnr = coroutine.yield()
+  
+  -- If sourceReference loading failed, do not fallback to path
+  if err then
+    log:debug('sourceReference loading failed (' .. tostring(err) .. '), not falling back to path')
+    return nil
+  end
+  
   return bufnr
 end
 
@@ -605,8 +713,8 @@ function Session:source(source, cb)
   assert(source, 'source is required')
   assert(source.sourceReference, 'sourceReference is required')
   assert(source.sourceReference ~= 0, 'sourceReference must not be 0')
+  -- Only send sourceReference; avoid passing path/uri which can confuse some adapters
   local params = {
-    source = source,
     sourceReference = source.sourceReference
   }
 
@@ -948,12 +1056,76 @@ do
         api.nvim_buf_attach(bufnr, false, { on_detach = remove_breakpoints })
       end
       local path = api.nvim_buf_get_name(bufnr)
+      log:debug('Buffer path from nvim: ' .. tostring(path))
+      
+      -- Handle file:// URIs in buffer path
+      if path and path:match('^file://') then
+        path = path:gsub('^file://', '')
+        log:debug('Converted buffer file URI to path: ' .. path)
+      end
+      
+      -- Debug: Show current state of source references
+      log:debug('Available source references: ' .. vim.inspect(self.source_references))
+      log:debug('Path to source ref mapping: ' .. vim.inspect(self.path_to_source_ref))
+      
+      -- Check if we have a sourceReference for this path
+      -- Try both absolute path and relative paths that might match
+      local source_ref = self.path_to_source_ref[path]
+      
+      -- If no match with absolute path, try to find a relative path match
+      if not source_ref then
+        local filename = vim.fn.fnamemodify(path, ':t')
+        log:debug('Looking for filename: ' .. filename)
+        
+        for stored_path, ref in pairs(self.path_to_source_ref) do
+          -- First check: exact filename match
+          if stored_path:find(vim.pesc(filename) .. '$') then
+            log:debug('Found filename match in stored path: ' .. stored_path)
+            
+            -- For relative paths like "../src/stdio-acp-client.ts", check if current path contains the suffix
+            local stored_clean = stored_path:gsub('^%.%./', '')  -- Remove "../" prefix
+            if path:find(vim.pesc(stored_clean), 1, true) then
+              source_ref = ref
+              log:info('✓ Found sourceReference via relative path matching: ' .. stored_path .. ' -> ' .. ref)
+              break
+            end
+            
+            -- Alternative: check if the path ends with the same structure
+            local stored_parts = vim.split(stored_clean, '/')
+            local current_parts = vim.split(path, '/')
+            if #stored_parts >= 2 and #current_parts >= #stored_parts then
+              -- Check if the last N segments match
+              local matches = true
+              for i = 1, #stored_parts do
+                if stored_parts[#stored_parts - i + 1] ~= current_parts[#current_parts - i + 1] then
+                  matches = false
+                  break
+                end
+              end
+              if matches then
+                source_ref = ref
+                log:info('✓ Found sourceReference via path suffix matching: ' .. stored_path .. ' -> ' .. ref)
+                break
+              end
+            end
+          end
+        end
+      end
+      
+      local source = {}
+      if source_ref then
+        source.sourceReference = source_ref
+        source.name = vim.fn.fnamemodify(path, ':t')
+        log:info('✓ Setting breakpoints using sourceReference: ' .. source_ref .. ' for ' .. (source.name or '<unknown>'))
+      else
+        source.path = path
+        source.name = vim.fn.fnamemodify(path, ':t')
+        log:debug('Setting breakpoints using path: ' .. (source.path or '<none>'))
+      end
+      
       ---@type dap.SetBreakpointsArguments
       local payload = {
-        source = {
-          path = path;
-          name = vim.fn.fnamemodify(path, ':t')
-        };
+        source = source;
         sourceModified = false;
         breakpoints = vim.tbl_map(
           function(bp)
@@ -1223,7 +1395,44 @@ local function new_session(adapter, config, opts, handle)
     handle = handle,
     client = {},
     config = config,
+    source_references = {}, -- Maps sourceReference -> { path, name }
+    path_to_source_ref = {}, -- Maps path -> sourceReference
   }
+  
+  -- Add stackTrace listener to capture sourceReferences from stack frames
+  local dap = require('dap')
+  local session_id = 'session_' .. next_session_id
+  dap.listeners.after.stackTrace[session_id] = function(session, err, response)
+    if not err and response and response.stackFrames then
+      for _, frame in ipairs(response.stackFrames) do
+        if frame.source and frame.source.sourceReference and frame.source.sourceReference ~= 0 then
+          local source = frame.source
+          local clean_path = source.path
+          
+          -- Handle file:// URIs by converting to regular paths
+          if clean_path and clean_path:match('^file://') then
+            clean_path = clean_path:gsub('^file://', '')
+            log:debug('Converted file URI to path: ' .. source.path .. ' -> ' .. clean_path)
+          end
+          
+          session.source_references[source.sourceReference] = {
+            path = clean_path,
+            name = source.name
+          }
+          if clean_path then
+            session.path_to_source_ref[clean_path] = source.sourceReference
+          end
+          log:info('✓ Captured sourceReference from stackTrace: ' .. source.sourceReference .. ' for ' .. (source.name or clean_path or '<unknown>'))
+        end
+      end
+    end
+  end
+  
+  -- Clean up listener when session closes
+  state.on_close[session_id] = function()
+    dap.listeners.after.stackTrace[session_id] = nil
+  end
+  
   function state.client.write(line)
     state.handle:write(line)
   end
@@ -2027,7 +2236,31 @@ end
 function Session.event_process()
 end
 
-function Session.event_loadedSource()
+---@param event dap.LoadedSourceEvent
+function Session:event_loadedSource(event)
+  local source = event.source
+  if source then
+    if source.sourceReference and source.sourceReference ~= 0 then
+      local clean_path = source.path
+      
+      -- Handle file:// URIs by converting to regular paths
+      if clean_path and clean_path:match('^file://') then
+        clean_path = clean_path:gsub('^file://', '')
+        log:debug('Converted file URI to path: ' .. source.path .. ' -> ' .. clean_path)
+      end
+      
+      self.source_references[source.sourceReference] = {
+        path = clean_path,
+        name = source.name
+      }
+      if clean_path then
+        self.path_to_source_ref[clean_path] = source.sourceReference
+      end
+      log:info('✓ Captured sourceReference: ' .. source.sourceReference .. ' for ' .. (source.name or clean_path or '<unknown>'))
+    else
+      log:debug('Ignoring loadedSource (sourceReference=0): ' .. (source.name or source.path or '<unknown>'))
+    end
+  end
 end
 
 
