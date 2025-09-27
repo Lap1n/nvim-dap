@@ -1397,6 +1397,7 @@ local function new_session(adapter, config, opts, handle)
     config = config,
     source_references = {}, -- Maps sourceReference -> { path, name }
     path_to_source_ref = {}, -- Maps path -> sourceReference
+    _reapply_bps_pending = false,
   }
   
   -- Add stackTrace listener to capture sourceReferences from stack frames
@@ -1422,7 +1423,17 @@ local function new_session(adapter, config, opts, handle)
           if clean_path then
             session.path_to_source_ref[clean_path] = source.sourceReference
           end
-          log:info('✓ Captured sourceReference from stackTrace: ' .. source.sourceReference .. ' for ' .. (source.name or clean_path or '<unknown>'))
+          -- Debounced reapply of breakpoints after new mappings are captured
+          if not session._reapply_bps_pending then
+            session._reapply_bps_pending = true
+            vim.defer_fn(function()
+              session._reapply_bps_pending = false
+              local bps = require('dap.breakpoints').get()
+              if next(bps) ~= nil then
+                session:set_breakpoints(bps)
+              end
+            end, 150)
+          end
         end
       end
     end
@@ -2256,9 +2267,19 @@ function Session:event_loadedSource(event)
       if clean_path then
         self.path_to_source_ref[clean_path] = source.sourceReference
       end
-      log:info('✓ Captured sourceReference: ' .. source.sourceReference .. ' for ' .. (source.name or clean_path or '<unknown>'))
+      -- Debounced reapply of breakpoints after new mappings are captured
+      if not self._reapply_bps_pending then
+        self._reapply_bps_pending = true
+        vim.defer_fn(function()
+          self._reapply_bps_pending = false
+          local bps = require('dap.breakpoints').get()
+          if next(bps) ~= nil then
+            self:set_breakpoints(bps)
+          end
+        end, 150)
+      end
     else
-      log:debug('Ignoring loadedSource (sourceReference=0): ' .. (source.name or source.path or '<unknown>'))
+      -- ignore
     end
   end
 end
