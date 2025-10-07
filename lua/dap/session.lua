@@ -1,17 +1,17 @@
 local uv = vim.loop
 local api = vim.api
-local rpc = require('dap.rpc')
+local rpc = require("dap.rpc")
 
-local utils = require('dap.utils')
-local breakpoints = require('dap.breakpoints')
-local progress = require('dap.progress')
-local log = require('dap.log').create_logger('dap.log')
-local repl = require('dap.repl')
+local utils = require("dap.utils")
+local breakpoints = require("dap.breakpoints")
+local progress = require("dap.progress")
+local log = require("dap.log").create_logger("dap.log")
+local repl = require("dap.repl")
 local sec_to_ms = 1000
 local non_empty = utils.non_empty
 local index_of = utils.index_of
 local mime_to_filetype = {
-  ['text/javascript'] = 'javascript'
+  ["text/javascript"] = "javascript",
 }
 
 local err_mt = {
@@ -19,7 +19,6 @@ local err_mt = {
     return utils.fmt_error(e) or "Undefined error"
   end,
 }
-
 
 local ns_pool = {}
 do
@@ -33,7 +32,7 @@ do
       pool[ns] = nil
       return ns
     end
-    ns = api.nvim_create_namespace('dap-' .. tostring(next_id))
+    ns = api.nvim_create_namespace("dap-" .. tostring(next_id))
     next_id = next_id + 1
     return ns
   end
@@ -43,7 +42,6 @@ do
     pool[ns] = true
   end
 end
-
 
 ---@class dap.Session
 ---@field capabilities dap.Capabilities
@@ -69,7 +67,6 @@ end
 ---@field parent dap.Session|nil
 ---@field config dap.Configuration
 
-
 ---@class dap.TransportClient
 ---@field close fun(cb: function)
 ---@field write fun(line: string)
@@ -80,52 +77,62 @@ local session_mt = { __index = Session }
 
 -- Prefer local workspace file content over Source request for ESM.
 local function _strip_rel_prefix(p)
-  local s = p or ''
+  local s = p or ""
   -- repeatedly strip ../ and ./
   local prev
   repeat
     prev = s
-    s = s:gsub('^%./', '')
-    s = s:gsub('^%../', '')
+    s = s:gsub("^%./", "")
+    s = s:gsub("^%../", "")
   until s == prev
   return s
 end
 
 local function _endswith(str, suf)
-  if not str or not suf then return false end
-  if #suf > #str then return false end
+  if not str or not suf then
+    return false
+  end
+  if #suf > #str then
+    return false
+  end
   return str:sub(-#suf) == suf
 end
 
 local function resolve_local_file(session, spath)
-  if not spath or spath == '' then return nil end
-  if spath:match('^file://') then
-    spath = spath:gsub('^file://', '')
+  if not spath or spath == "" then
+    return nil
+  end
+  if spath:match("^file://") then
+    spath = spath:gsub("^file://", "")
   end
   local uv_local = vim.uv or vim.loop
   -- absolute path directly
-  if vim.startswith(spath, '/') or spath:match('^%a:[/\\]') or spath:match('^//') then
+  if vim.startswith(spath, "/") or spath:match("^%a:[/\\]") or spath:match("^//") then
     local st = uv_local.fs_stat(spath)
-    if st and (st.type == 'file' or st.type == 'link') then
+    if st and (st.type == "file" or st.type == "link") then
       return spath
     end
   end
   -- First try to resolve relative to likely base dirs (program dir, config.cwd, vim cwd)
   local bases = {}
   local program = session.config and session.config.program or nil
-  if type(program) == 'string' and program ~= '' then
-    local pdir = vim.fn.fnamemodify(program, ':p:h')
+  if type(program) == "string" and program ~= "" then
+    local pdir = vim.fn.fnamemodify(program, ":p:h")
     table.insert(bases, pdir)
   end
   local cfg_cwd = (session.config and session.config.cwd) or nil
-  if cfg_cwd and cfg_cwd ~= '' then table.insert(bases, cfg_cwd) end
+  if cfg_cwd and cfg_cwd ~= "" then
+    table.insert(bases, cfg_cwd)
+  end
   local nvim_cwd = vim.fn.getcwd()
-  if not cfg_cwd or cfg_cwd ~= nvim_cwd then table.insert(bases, nvim_cwd) end
+  if not cfg_cwd or cfg_cwd ~= nvim_cwd then
+    table.insert(bases, nvim_cwd)
+  end
   for _, base in ipairs(bases) do
-    local joined = base .. '/' .. spath
-    local abs = vim.fn.fnamemodify(joined, ':p')
+    local joined = base .. "/" .. spath
+    local abs = vim.fn.fnamemodify(joined, ":p")
     local st = uv_local.fs_stat(abs)
-    if st and (st.type == 'file' or st.type == 'link') then
+    if st and (st.type == "file" or st.type == "link") then
       return abs
     end
   end
@@ -135,16 +142,16 @@ local function resolve_local_file(session, spath)
   -- open buffers first
   for _, b in ipairs(vim.api.nvim_list_bufs()) do
     local name = vim.api.nvim_buf_get_name(b)
-    if name ~= '' and _endswith(name, '/' .. suffix) or name == suffix then
+    if name ~= "" and _endswith(name, "/" .. suffix) or name == suffix then
       return name
     end
   end
   for _, root in ipairs(bases) do
-    local matches = vim.fn.globpath(root, '**/' .. suffix, true, true)
-    if type(matches) == 'table' then
+    local matches = vim.fn.globpath(root, "**/" .. suffix, true, true)
+    if type(matches) == "table" then
       for _, m in ipairs(matches) do
         local st = uv_local.fs_stat(m)
-        if st and (st.type == 'file' or st.type == 'link') then
+        if st and (st.type == "file" or st.type == "link") then
           return m
         end
       end
@@ -157,9 +164,8 @@ end
 -- to an absolute local path using heuristics that work well for ESM.
 -- NOTE: custom adapter-relative path resolution was removed per user request
 
-
 local function json_decode(payload)
-  return vim.json.decode(payload, { luanil = { object = true }})
+  return vim.json.decode(payload, { luanil = { object = true } })
 end
 local json_encode = vim.json.encode
 local function send_payload(client, payload)
@@ -167,13 +173,12 @@ local function send_payload(client, payload)
   client.write(msg)
 end
 
-
 local function dap()
-  return require('dap')
+  return require("dap")
 end
 
 local function ui()
-  return require('dap.ui')
+  return require("dap.ui")
 end
 
 ---@param session dap.Session
@@ -181,24 +186,19 @@ local function defaults(session)
   return dap().defaults[session.config.type]
 end
 
-
 local function coresume(co)
   return function(...)
     if coroutine.status(co) == "suspended" then
       coroutine.resume(co, ...)
     else
-      local args = {...}
+      local args = { ... }
       vim.schedule(function()
-        assert(
-          coroutine.status(co) == "suspended",
-          "Incorrect use of coresume. Callee must have yielded"
-        )
+        assert(coroutine.status(co) == "suspended", "Incorrect use of coresume. Callee must have yielded")
         coroutine.resume(co, unpack(args))
       end)
     end
   end
 end
-
 
 local function launch_external_terminal(env, terminal, args)
   local handle
@@ -211,9 +211,9 @@ local function launch_external_terminal(env, terminal, args)
   if env then
     env_formatted = {}
     -- Copy environment, prefer vars set by client
-    for k, v in pairs(vim.tbl_extend('keep', env, vim.fn.environ())) do
-      if k:find "^[^=]*$" then -- correct variable?
-        env_formatted[#env_formatted+1] = k.."="..tostring(v)
+    for k, v in pairs(vim.tbl_extend("keep", env, vim.fn.environ())) do
+      if k:find("^[^=]*$") then -- correct variable?
+        env_formatted[#env_formatted + 1] = k .. "=" .. tostring(v)
       end
     end
   end
@@ -227,12 +227,14 @@ local function launch_external_terminal(env, terminal, args)
       handle:close()
     end
     if code ~= 0 then
-      utils.notify(string.format('Terminal exited %d running %s %s', code, terminal.command, table.concat(full_args, ' ')), vim.log.levels.ERROR)
+      utils.notify(
+        string.format("Terminal exited %d running %s %s", code, terminal.command, table.concat(full_args, " ")),
+        vim.log.levels.ERROR
+      )
     end
   end)
   return handle, pid_or_err
 end
-
 
 ---@param terminal_win_cmd string|fun(config: dap.Configuration):(integer, integer?)
 ---@param config dap.Configuration
@@ -250,7 +252,6 @@ local function create_terminal_buf(terminal_win_cmd, config)
     return terminal_win_cmd(config)
   end
 end
-
 
 local terminals = {}
 do
@@ -281,11 +282,11 @@ do
       vim.bo[buf].path = vim.bo[prev_buf].path
     end
     if terminal_win then
-      if vim.fn.has('nvim-0.8') == 1 then
+      if vim.fn.has("nvim-0.8") == 1 then
         -- older versions don't support the `win` key
-        api.nvim_set_option_value('number', false, { scope = 'local', win = terminal_win })
-        api.nvim_set_option_value('relativenumber', false, { scope = 'local', win = terminal_win })
-        api.nvim_set_option_value('signcolumn', 'no', { scope = 'local', win = terminal_win })
+        api.nvim_set_option_value("number", false, { scope = "local", win = terminal_win })
+        api.nvim_set_option_value("relativenumber", false, { scope = "local", win = terminal_win })
+        api.nvim_set_option_value("signcolumn", "no", { scope = "local", win = terminal_win })
       else
         -- this is like `:set` so new windows will inherit the values :/
         vim.wo[terminal_win].number = false
@@ -293,7 +294,7 @@ do
         vim.wo[terminal_win].signcolumn = "no"
       end
     end
-    vim.b[buf]['dap-type'] = config.type
+    vim.b[buf]["dap-type"] = config.type
     return buf, terminal_win
   end
 
@@ -303,34 +304,32 @@ do
   end
 end
 
-
 ---@param lsession dap.Session
 local function run_in_terminal(lsession, request)
   local body = request.arguments
-  log:debug('run_in_terminal', body)
+  log:debug("run_in_terminal", body)
   local settings = dap().defaults[lsession.config.type]
-  if body.kind == 'external' or (settings.force_external_terminal and settings.external_terminal) then
+  if body.kind == "external" or (settings.force_external_terminal and settings.external_terminal) then
     local terminal = settings.external_terminal
     if not terminal then
-      utils.notify('Requested external terminal, but none configured. Fallback to integratedTerminal', vim.log.levels.WARN)
+      utils.notify(
+        "Requested external terminal, but none configured. Fallback to integratedTerminal",
+        vim.log.levels.WARN
+      )
     else
       local handle, pid = launch_external_terminal(body.env, terminal, body.args)
       if not handle then
-        utils.notify('Could not launch terminal ' .. terminal.command, vim.log.levels.ERROR)
+        utils.notify("Could not launch terminal " .. terminal.command, vim.log.levels.ERROR)
       end
       lsession:response(request, {
-        success = handle ~= nil;
-        body = { processId = pid; };
+        success = handle ~= nil,
+        body = { processId = pid },
       })
       return
     end
   end
   local cur_buf = api.nvim_get_current_buf()
-  local terminal_buf, terminal_win = terminals.acquire(
-    settings.terminal_win_cmd,
-    lsession.config,
-    lsession.filetype
-  )
+  local terminal_buf, terminal_win = terminals.acquire(settings.terminal_win_cmd, lsession.config, lsession.filetype)
   pcall(api.nvim_buf_del_keymap, terminal_buf, "t", "<CR>")
   local path = vim.bo[cur_buf].path
   if path and path ~= "" then
@@ -343,13 +342,13 @@ local function run_in_terminal(lsession, request)
     local termopen = vim.fn.has("nvim-0.11") == 1 and vim.fn.jobstart or vim.fn.termopen
     jobid = termopen(body.args, {
       env = next(body.env or {}) and body.env or vim.empty_dict(),
-      cwd = (body.cwd and body.cwd ~= '') and body.cwd or nil,
+      cwd = (body.cwd and body.cwd ~= "") and body.cwd or nil,
       height = terminal_win and api.nvim_win_get_height(terminal_win) or math.ceil(vim.o.lines / 2),
       width = terminal_win and api.nvim_win_get_width(terminal_win) or vim.o.columns,
       term = vim.fn.has("nvim-0.11") == 1 and true or nil,
       on_exit = function()
         terminals.release(terminal_buf)
-      end
+      end,
     })
   end)
 
@@ -369,26 +368,25 @@ local function run_in_terminal(lsession, request)
     end
   end
   if jobid == 0 or jobid == -1 then
-    log:error('Could not spawn terminal', jobid, request)
+    log:error("Could not spawn terminal", jobid, request)
     lsession:response(request, {
-      success = false;
-      message = 'Could not spawn terminal';
+      success = false,
+      message = "Could not spawn terminal",
     })
   else
     lsession:response(request, {
-      success = true;
+      success = true,
       body = {
-        processId = vim.fn.jobpid(jobid);
-      };
+        processId = vim.fn.jobpid(jobid),
+      },
     })
   end
 end
 
-
 function Session:event_initialized()
   local function on_done()
     if self.capabilities.supportsConfigurationDoneRequest then
-      self:request('configurationDone', nil, function(err1, _)
+      self:request("configurationDone", nil, function(err1, _)
         if err1 then
           utils.notify(tostring(err1), vim.log.levels.ERROR)
         end
@@ -409,7 +407,6 @@ function Session:event_initialized()
   end)
 end
 
-
 ---@param thread_id number
 ---@param bufnr integer
 ---@param frame dap.StackFrame
@@ -417,19 +414,19 @@ function Session:_show_exception_info(thread_id, bufnr, frame)
   if not self.capabilities.supportsExceptionInfoRequest then
     return
   end
-  local err, response = self:request('exceptionInfo', {threadId = thread_id})
+  local err, response = self:request("exceptionInfo", { threadId = thread_id })
   if err then
-    utils.notify('Error getting exception info: ' .. tostring(err), vim.log.levels.ERROR)
+    utils.notify("Error getting exception info: " .. tostring(err), vim.log.levels.ERROR)
   end
   if not response then
     return
   end
   local msg_parts = {}
   local exception_type = response.details and response.details.typeName
-  local of_type = exception_type and ' of type '..exception_type or ''
-  table.insert(msg_parts, ('Thread stopped due to exception'..of_type..' ('..response.breakMode..')'))
+  local of_type = exception_type and " of type " .. exception_type or ""
+  table.insert(msg_parts, ("Thread stopped due to exception" .. of_type .. " (" .. response.breakMode .. ")"))
   if response.description then
-    table.insert(msg_parts, ('Description: '..response.description))
+    table.insert(msg_parts, ("Description: " .. response.description))
   end
   local details = response.details or {}
   if details.stackTrace then
@@ -450,13 +447,11 @@ function Session:_show_exception_info(thread_id, bufnr, frame)
       col = frame.column and (frame.column - 1) or 0,
       end_col = frame.endColumn,
       severity = vim.diagnostic.severity.ERROR,
-      message = table.concat(msg_parts, '\n'),
-      source = 'nvim-dap',
-    }
+      message = table.concat(msg_parts, "\n"),
+      source = "nvim-dap",
+    },
   })
 end
-
-
 
 ---@param win integer
 ---@param line integer
@@ -464,8 +459,19 @@ end
 local function set_cursor(win, line, column)
   local bufnr = api.nvim_win_get_buf(win)
   local line_count = api.nvim_buf_line_count(bufnr)
-  log:debug('set_cursor: win=' .. win .. ', buf=' .. bufnr .. ', line=' .. line .. ', column=' .. column .. ', buf_lines=' .. line_count)
-  
+  log:debug(
+    "set_cursor: win="
+      .. win
+      .. ", buf="
+      .. bufnr
+      .. ", line="
+      .. line
+      .. ", column="
+      .. column
+      .. ", buf_lines="
+      .. line_count
+  )
+
   local ok, err = pcall(api.nvim_win_set_cursor, win, { line, column - 1 })
   if ok then
     local curbuf = api.nvim_get_current_buf()
@@ -473,22 +479,21 @@ local function set_cursor(win, line, column)
       api.nvim_set_current_win(win)
     end
     api.nvim_win_call(win, function()
-      api.nvim_command('normal! zv')
+      api.nvim_command("normal! zv")
     end)
   else
     local msg = string.format(
       "Adapter reported a frame in buf %d line %s column %s, but: %s. "
-      .. "Ensure executable is up2date and if using a source mapping ensure it is correct",
+        .. "Ensure executable is up2date and if using a source mapping ensure it is correct",
       bufnr,
       line,
       column,
       err
     )
     utils.notify(msg, vim.log.levels.WARN)
-    log:warn('Failed to set cursor: ' .. msg)
+    log:warn("Failed to set cursor: " .. msg)
   end
 end
-
 
 ---@param bufnr number
 ---@param line number
@@ -496,7 +501,7 @@ end
 ---@param switchbuf string|fun(bufnr: integer, line: integer, column: integer):nil
 ---@param filetype string
 local function jump_to_location(bufnr, line, column, switchbuf, filetype)
-  progress.report('Stopped at line ' .. line)
+  progress.report("Stopped at line " .. line)
   -- vscode-go sends columns with 0
   -- That would cause a "Column value outside range" error calling nvim_win_set_cursor
   -- nvim-dap says "columnsStartAt1 = true" on initialize :/
@@ -514,13 +519,13 @@ local function jump_to_location(bufnr, line, column, switchbuf, filetype)
   local switchbuf_fn = {}
 
   function switchbuf_fn.uselast()
-    local ok, is_source_buf = pcall(vim.api.nvim_buf_get_var, cur_buf, 'dap_source_buf')
+    local ok, is_source_buf = pcall(vim.api.nvim_buf_get_var, cur_buf, "dap_source_buf")
     is_source_buf = ok and is_source_buf
-    if vim.bo[cur_buf].buftype == '' or vim.bo[cur_buf].filetype == filetype or is_source_buf then
+    if vim.bo[cur_buf].buftype == "" or vim.bo[cur_buf].filetype == filetype or is_source_buf then
       api.nvim_win_set_buf(cur_win, bufnr)
       set_cursor(cur_win, line, column)
     else
-      local win = vim.fn.win_getid(vim.fn.winnr('#'))
+      local win = vim.fn.win_getid(vim.fn.winnr("#"))
       if win then
         api.nvim_win_set_buf(win, bufnr)
         set_cursor(win, line, column)
@@ -559,7 +564,7 @@ local function jump_to_location(bufnr, line, column, switchbuf, filetype)
       set_cursor(cur_win, line, column)
       return true
     end
-    local tabs = {0,}
+    local tabs = { 0 }
     vim.list_extend(tabs, api.nvim_list_tabpages())
     for _, tabpage in ipairs(tabs) do
       for _, win in ipairs(api.nvim_tabpage_list_wins(tabpage)) do
@@ -574,28 +579,28 @@ local function jump_to_location(bufnr, line, column, switchbuf, filetype)
   end
 
   function switchbuf_fn.split()
-    vim.cmd('split ' .. api.nvim_buf_get_name(bufnr))
+    vim.cmd("split " .. api.nvim_buf_get_name(bufnr))
     set_cursor(0, line, column)
     return true
   end
 
   function switchbuf_fn.vsplit()
-    vim.cmd('vsplit ' .. api.nvim_buf_get_name(bufnr))
+    vim.cmd("vsplit " .. api.nvim_buf_get_name(bufnr))
     set_cursor(0, line, column)
     return true
   end
 
   function switchbuf_fn.newtab()
-    vim.cmd('tabnew ' .. api.nvim_buf_get_name(bufnr))
+    vim.cmd("tabnew " .. api.nvim_buf_get_name(bufnr))
     set_cursor(0, line, column)
     return true
   end
 
-  if type(switchbuf) == "string" and switchbuf:find('usetab') then
+  if type(switchbuf) == "string" and switchbuf:find("usetab") then
     switchbuf_fn.useopen = switchbuf_fn.usetab
   end
 
-  if type(switchbuf) == "string" and switchbuf:find('newtab') then
+  if type(switchbuf) == "string" and switchbuf:find("newtab") then
     switchbuf_fn.vsplit = switchbuf_fn.newtab
     switchbuf_fn.split = switchbuf_fn.newtab
   end
@@ -605,7 +610,7 @@ local function jump_to_location(bufnr, line, column, switchbuf, filetype)
     return
   end
 
-  local opts = vim.split(switchbuf, ',', { plain = true })
+  local opts = vim.split(switchbuf, ",", { plain = true })
   for _, opt in pairs(opts) do
     local fn = switchbuf_fn[opt]
     if fn and fn() then
@@ -613,11 +618,14 @@ local function jump_to_location(bufnr, line, column, switchbuf, filetype)
     end
   end
   utils.notify(
-    'Stopped at line ' .. line .. ' but `switchbuf` setting prevented jump to location. Target buffer ' .. bufnr .. ' not open in any window?',
+    "Stopped at line "
+      .. line
+      .. " but `switchbuf` setting prevented jump to location. Target buffer "
+      .. bufnr
+      .. " not open in any window?",
     vim.log.levels.WARN
   )
 end
-
 
 --- Get the bufnr for a frame.
 --- Might load source as a side effect if frame.source has sourceReference ~= 0
@@ -634,8 +642,8 @@ local function source_to_bufnr(session, source)
     if not source.path then
       return nil
     end
-    local scheme = source.path:match('^([a-z]+)://.*')
-    local is_abs = vim.startswith(source.path, '/') or source.path:match('^%a:[/\\]') or source.path:match('^//')
+    local scheme = source.path:match("^([a-z]+)://.*")
+    local is_abs = vim.startswith(source.path, "/") or source.path:match("^%a:[/\\]") or source.path:match("^//")
     if scheme then
       return vim.uri_to_bufnr(source.path)
     elseif not is_abs then
@@ -659,19 +667,18 @@ local function source_to_bufnr(session, source)
   end
 
   local co = coroutine.running()
-  assert(co, 'Must run in coroutine')
+  assert(co, "Must run in coroutine")
   session:source(source, coresume(co))
   local err, bufnr = coroutine.yield()
-  
+
   -- If sourceReference loading failed, do not fallback to path
   if err then
-    log:debug('sourceReference loading failed (' .. tostring(err) .. '), not falling back to path')
+    log:debug("sourceReference loading failed (" .. tostring(err) .. "), not falling back to path")
     return nil
   end
-  
+
   return bufnr
 end
-
 
 ---@param session dap.Session
 ---@param frame dap.StackFrame
@@ -680,7 +687,7 @@ end
 local function jump_to_frame(session, frame, preserve_focus_hint, stopped)
   local source = frame.source
   if not source then
-    utils.notify('Source missing, cannot jump to frame: ' .. frame.name, vim.log.levels.INFO)
+    utils.notify("Source missing, cannot jump to frame: " .. frame.name, vim.log.levels.INFO)
     return
   end
   vim.fn.sign_unplace(session.sign_group)
@@ -689,33 +696,33 @@ local function jump_to_frame(session, frame, preserve_focus_hint, stopped)
   end
   local bufnr = source_to_bufnr(session, frame.source)
   if not bufnr then
-    utils.notify('Source missing, cannot jump to frame: ' .. frame.name, vim.log.levels.INFO)
+    utils.notify("Source missing, cannot jump to frame: " .. frame.name, vim.log.levels.INFO)
     return
   end
   vim.fn.bufload(bufnr)
   vim.bo[bufnr].buflisted = true
-  local ok, failure = pcall(vim.fn.sign_place, 0, session.sign_group, 'DapStopped', bufnr, { lnum = frame.line; priority = 22 })
+  local ok, failure =
+    pcall(vim.fn.sign_place, 0, session.sign_group, "DapStopped", bufnr, { lnum = frame.line, priority = 22 })
   if not ok then
     utils.notify(tostring(failure), vim.log.levels.ERROR)
   end
-  local switchbuf = defaults(session).switchbuf or vim.o.switchbuf or 'uselast'
+  local switchbuf = defaults(session).switchbuf or vim.o.switchbuf or "uselast"
   jump_to_location(bufnr, frame.line, frame.column, switchbuf, session.filetype)
-  if stopped and stopped.reason == 'exception' then
+  if stopped and stopped.reason == "exception" then
     session:_show_exception_info(stopped.threadId, bufnr, frame)
   end
 end
-
 
 --- Request a source
 ---@param source dap.Source
 ---@param cb fun(err: dap.ErrorResponse?, buf: integer?) the buffer will have the contents of the source
 function Session:source(source, cb)
-  assert(source, 'source is required')
-  assert(source.sourceReference, 'sourceReference is required')
-  assert(source.sourceReference ~= 0, 'sourceReference must not be 0')
+  assert(source, "source is required")
+  assert(source.sourceReference, "sourceReference is required")
+  assert(source.sourceReference ~= 0, "sourceReference must not be 0")
   -- Only send sourceReference; avoid passing path/uri which can confuse some adapters
   local params = {
-    sourceReference = source.sourceReference
+    sourceReference = source.sourceReference,
   }
 
   ---@param err dap.ErrorResponse
@@ -726,13 +733,13 @@ function Session:source(source, cb)
       return
     end
     local buf = api.nvim_create_buf(false, true)
-    api.nvim_buf_set_var(buf, 'dap_source_buf', true)
+    api.nvim_buf_set_var(buf, "dap_source_buf", true)
     local adapter_options = self.adapter.options or {}
     local ft = mime_to_filetype[response.mimeType] or adapter_options.source_filetype
     if ft then
       vim.bo[buf].filetype = ft
     end
-    api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(response.content, '\n'))
+    api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(response.content, "\n"))
     if not ft and source.path and vim.filetype then
       pcall(api.nvim_buf_set_name, buf, source.path)
       local ok, filetype = pcall(vim.filetype.match, source.path, buf)
@@ -747,13 +754,11 @@ function Session:source(source, cb)
     cb(nil, buf)
   end
 
-  self:request('source', params, on_source)
+  self:request("source", params, on_source)
 end
-
 
 ---@param cb fun(err: dap.ErrorResponse?)
 function Session:update_threads(cb)
-
   ---@param err dap.ErrorResponse?
   ---@param response dap.ThreadResponse?
   local on_threads = function(err, response)
@@ -776,9 +781,8 @@ function Session:update_threads(cb)
     cb(nil)
   end
 
-  self:request('threads', nil, on_threads)
+  self:request("threads", nil, on_threads)
 end
-
 
 ---@param frames dap.StackFrame[]
 ---@return dap.StackFrame|nil
@@ -792,7 +796,6 @@ local function get_top_frame(frames)
   return first
 end
 
-
 ---@param stopped dap.StoppedEvent
 function Session:event_stopped(stopped)
   require("dap.async").run(function()
@@ -802,7 +805,7 @@ function Session:event_stopped(stopped)
       local thread = {
         id = stopped.threadId,
         name = "Unknown",
-        stopped = true
+        stopped = true,
       }
       if thread.id then
         self.threads[thread.id] = thread
@@ -810,7 +813,7 @@ function Session:event_stopped(stopped)
       self:update_threads(coresume(co))
       local err = coroutine.yield()
       if err then
-        utils.notify('Error retrieving threads: ' .. tostring(err), vim.log.levels.ERROR)
+        utils.notify("Error retrieving threads: " .. tostring(err), vim.log.levels.ERROR)
         return
       end
       if thread.stopped == false then
@@ -819,7 +822,7 @@ function Session:event_stopped(stopped)
       end
     end
 
-    local should_jump = stopped.reason ~= 'pause' or stopped.allThreadsStopped
+    local should_jump = stopped.reason ~= "pause" or stopped.allThreadsStopped
 
     -- Some debug adapters allow to continue/step via custom REPL commands (via evaluate)
     -- That by-passes `clear_running`, resulting in self.stopped_thread_id still being set
@@ -829,10 +832,13 @@ function Session:event_stopped(stopped)
         local thread = self.threads[self.stopped_thread_id]
         local thread_name = thread and thread.name or self.stopped_thread_id
         log:debug(
-          'Received stopped event, but ' .. thread_name .. ' is already stopped. ' ..
-          'Resuming newly stopped thread. ' ..
-          'To disable this set the `auto_continue_if_many_stopped` option to false.')
-        self:request('continue', { threadId = stopped.threadId }, function() end)
+          "Received stopped event, but "
+            .. thread_name
+            .. " is already stopped. "
+            .. "Resuming newly stopped thread. "
+            .. "To disable this set the `auto_continue_if_many_stopped` option to false."
+        )
+        self:request("continue", { threadId = stopped.threadId }, function() end)
         return
       else
         -- Allow thread to stop, but don't jump to it because stepping
@@ -845,42 +851,42 @@ function Session:event_stopped(stopped)
     end
 
     if stopped.allThreadsStopped then
-      progress.report('All threads stopped')
+      progress.report("All threads stopped")
       for _, thread in pairs(self.threads) do
         thread.stopped = true
       end
     elseif stopped.threadId then
-      progress.report('Thread stopped: ' .. stopped.threadId)
+      progress.report("Thread stopped: " .. stopped.threadId)
       self.threads[stopped.threadId].stopped = true
     else
-      utils.notify('Stopped event received, but no threadId or allThreadsStopped', vim.log.levels.WARN)
+      utils.notify("Stopped event received, but no threadId or allThreadsStopped", vim.log.levels.WARN)
     end
 
     if not stopped.threadId then
       return
     end
     local thread = self.threads[stopped.threadId]
-    assert(thread, 'Thread not found: ' .. stopped.threadId)
+    assert(thread, "Thread not found: " .. stopped.threadId)
 
     ---@type dap.StackTraceArguments
     local params = {
       startFrame = 0,
-      threadId = stopped.threadId
+      threadId = stopped.threadId,
     }
-    local err, response = self:request('stackTrace', params)
+    local err, response = self:request("stackTrace", params)
     if thread.stopped == false then
       log:debug("Debug adapter resumed during stopped event handling", thread, err)
       return
     end
     if err then
-      utils.notify('Error retrieving stack traces: ' .. tostring(err), vim.log.levels.ERROR)
+      utils.notify("Error retrieving stack traces: " .. tostring(err), vim.log.levels.ERROR)
       return
     end
     local frames = response.stackFrames --[=[@as dap.StackFrame[]]=]
     thread.frames = frames
     local current_frame = get_top_frame(frames)
     if not current_frame then
-      utils.notify('Debug adapter stopped at unavailable location', vim.log.levels.WARN)
+      utils.notify("Debug adapter stopped at unavailable location", vim.log.levels.WARN)
       return
     end
     if should_jump then
@@ -896,7 +902,6 @@ function Session:event_stopped(stopped)
   end)
 end
 
-
 ---@param body dap.TerminatedEvent
 function Session:event_terminated(body)
   self:close()
@@ -910,7 +915,6 @@ function Session:event_terminated(body)
   end
 end
 
-
 ---@param body dap.OutputEvent
 function Session:event_output(body)
   local settings = defaults(self)
@@ -919,18 +923,17 @@ function Session:event_output(body)
     on_output(self, body)
     return
   end
-  if body.category == 'telemetry' then
-    log:info('Telemetry', body.output)
+  if body.category == "telemetry" then
+    log:info("Telemetry", body.output)
   else
-    repl.append(body.output, '$', { newline = false })
+    repl.append(body.output, "$", { newline = false })
   end
 end
-
 
 ---@param current_frame dap.StackFrame
 function Session:_request_scopes(current_frame)
   local params = {
-    frameId = current_frame.id
+    frameId = current_frame.id,
   }
   ---@param scope_resp dap.ScopesResponse?
   local function on_scopes(_, scope_resp)
@@ -941,7 +944,6 @@ function Session:_request_scopes(current_frame)
     current_frame.scopes = scopes
     for _, scope in ipairs(scopes) do
       if not scope.expensive then
-
         ---@param resp dap.VariableResponse?
         local function on_variables(_, resp)
           scope.variables = resp and resp.variables or nil
@@ -951,13 +953,12 @@ function Session:_request_scopes(current_frame)
         end
 
         local varparams = { variablesReference = scope.variablesReference }
-        self:request('variables', varparams, on_variables)
+        self:request("variables", varparams, on_variables)
       end
     end
   end
-  self:request('scopes', params, on_scopes)
+  self:request("scopes", params, on_scopes)
 end
-
 
 ---@param session dap.Session
 local function clear_running(session, thread_id)
@@ -969,7 +970,6 @@ local function clear_running(session, thread_id)
     thread.stopped = false
   end
 end
-
 
 --- Goto specified line (source and col are optional)
 function Session:_goto(line, source, col)
@@ -983,38 +983,35 @@ function Session:_goto(line, source, col)
     return
   end
   coroutine.wrap(function()
-    local err, response = self:request('gotoTargets',  {source = source or frame.source, line = line, col = col})
+    local err, response = self:request("gotoTargets", { source = source or frame.source, line = line, col = col })
     if err then
-      utils.notify('Error getting gotoTargets: ' .. tostring(err), vim.log.levels.ERROR)
+      utils.notify("Error getting gotoTargets: " .. tostring(err), vim.log.levels.ERROR)
       return
     end
     if not response or not response.targets then
       utils.notify("No goto targets available. Can't execute goto", vim.log.levels.INFO)
       return
     end
-    local target = ui().pick_if_many(
-      response.targets,
-      'goto target> ',
-      function(target) return target.label end
-    )
+    local target = ui().pick_if_many(response.targets, "goto target> ", function(target)
+      return target.label
+    end)
     if not target then
       return
     end
     local stopped_thread_id = self.stopped_thread_id
-    local params = {threadId = stopped_thread_id, targetId = target.id }
+    local params = { threadId = stopped_thread_id, targetId = target.id }
     local thread = self.threads[stopped_thread_id]
     clear_running(self, stopped_thread_id)
-    local goto_err = self:request('goto', params)
+    local goto_err = self:request("goto", params)
     if goto_err then
       self.stopped_thread_id = stopped_thread_id
       if thread then
         thread.stopped = true
       end
-      utils.notify('Error executing goto: ' .. tostring(goto_err), vim.log.levels.ERROR)
+      utils.notify("Error executing goto: " .. tostring(goto_err), vim.log.levels.ERROR)
     end
   end)()
 end
-
 
 do
   local function notify_if_missing_capability(bps, capabilities)
@@ -1036,7 +1033,7 @@ do
   local function remove_breakpoints(_, buf)
     local session = dap().session()
     if session then
-      session:set_breakpoints({[buf] = {}})
+      session:set_breakpoints({ [buf] = {} })
     end
     detach_handlers[buf] = nil
   end
@@ -1056,43 +1053,43 @@ do
         api.nvim_buf_attach(bufnr, false, { on_detach = remove_breakpoints })
       end
       local path = api.nvim_buf_get_name(bufnr)
-      log:debug('Buffer path from nvim: ' .. tostring(path))
-      
+      log:debug("Buffer path from nvim: " .. tostring(path))
+
       -- Handle file:// URIs in buffer path
-      if path and path:match('^file://') then
-        path = path:gsub('^file://', '')
-        log:debug('Converted buffer file URI to path: ' .. path)
+      if path and path:match("^file://") then
+        path = path:gsub("^file://", "")
+        log:debug("Converted buffer file URI to path: " .. path)
       end
-      
+
       -- Debug: Show current state of source references
-      log:debug('Available source references: ' .. vim.inspect(self.source_references))
-      log:debug('Path to source ref mapping: ' .. vim.inspect(self.path_to_source_ref))
-      
+      log:debug("Available source references: " .. vim.inspect(self.source_references))
+      log:debug("Path to source ref mapping: " .. vim.inspect(self.path_to_source_ref))
+
       -- Check if we have a sourceReference for this path
       -- Try both absolute path and relative paths that might match
       local source_ref = self.path_to_source_ref[path]
-      
+
       -- If no match with absolute path, try to find a relative path match
       if not source_ref then
-        local filename = vim.fn.fnamemodify(path, ':t')
-        log:debug('Looking for filename: ' .. filename)
-        
+        local filename = vim.fn.fnamemodify(path, ":t")
+        log:debug("Looking for filename: " .. filename)
+
         for stored_path, ref in pairs(self.path_to_source_ref) do
           -- First check: exact filename match
-          if stored_path:find(vim.pesc(filename) .. '$') then
-            log:debug('Found filename match in stored path: ' .. stored_path)
-            
+          if stored_path:find(vim.pesc(filename) .. "$") then
+            log:debug("Found filename match in stored path: " .. stored_path)
+
             -- For relative paths like "../src/stdio-acp-client.ts", check if current path contains the suffix
-            local stored_clean = stored_path:gsub('^%.%./', '')  -- Remove "../" prefix
+            local stored_clean = stored_path:gsub("^%.%./", "") -- Remove "../" prefix
             if path:find(vim.pesc(stored_clean), 1, true) then
               source_ref = ref
-              log:info('✓ Found sourceReference via relative path matching: ' .. stored_path .. ' -> ' .. ref)
+              log:info("✓ Found sourceReference via relative path matching: " .. stored_path .. " -> " .. ref)
               break
             end
-            
+
             -- Alternative: check if the path ends with the same structure
-            local stored_parts = vim.split(stored_clean, '/')
-            local current_parts = vim.split(path, '/')
+            local stored_parts = vim.split(stored_clean, "/")
+            local current_parts = vim.split(path, "/")
             if #stored_parts >= 2 and #current_parts >= #stored_parts then
               -- Check if the last N segments match
               local matches = true
@@ -1104,54 +1101,55 @@ do
               end
               if matches then
                 source_ref = ref
-                log:info('✓ Found sourceReference via path suffix matching: ' .. stored_path .. ' -> ' .. ref)
+                log:info("✓ Found sourceReference via path suffix matching: " .. stored_path .. " -> " .. ref)
                 break
               end
             end
           end
         end
       end
-      
+
       local source = {}
       if source_ref then
         source.sourceReference = source_ref
-        source.name = vim.fn.fnamemodify(path, ':t')
-        log:info('✓ Setting breakpoints using sourceReference: ' .. source_ref .. ' for ' .. (source.name or '<unknown>'))
+        source.name = vim.fn.fnamemodify(path, ":t")
+        log:info(
+          "✓ Setting breakpoints using sourceReference: " .. source_ref .. " for " .. (source.name or "<unknown>")
+        )
       else
         source.path = path
-        source.name = vim.fn.fnamemodify(path, ':t')
-        log:debug('Setting breakpoints using path: ' .. (source.path or '<none>'))
+        source.name = vim.fn.fnamemodify(path, ":t")
+        log:debug("Setting breakpoints using path: " .. (source.path or "<none>"))
       end
-      
+
       ---@type dap.SetBreakpointsArguments
       local payload = {
-        source = source;
-        sourceModified = false;
-        breakpoints = vim.tbl_map(
-          function(bp)
-            -- trim extra information like the state
-            return {
-              line = bp.line,
-              column = bp.column,
-              condition = bp.condition,
-              hitCondition = bp.hitCondition,
-              logMessage = bp.logMessage,
-            }
-          end,
-          buf_bps
-        ),
-        lines = vim.tbl_map(function(x) return x.line end, buf_bps);
+        source = source,
+        sourceModified = false,
+        breakpoints = vim.tbl_map(function(bp)
+          -- trim extra information like the state
+          return {
+            line = bp.line,
+            column = bp.column,
+            condition = bp.condition,
+            hitCondition = bp.hitCondition,
+            logMessage = bp.logMessage,
+          }
+        end, buf_bps),
+        lines = vim.tbl_map(function(x)
+          return x.line
+        end, buf_bps),
       }
       ---@param err1 dap.ErrorResponse
       ---@param resp dap.SetBreakpointsResponse
       local function on_response(err1, resp)
         if err1 then
-          utils.notify('Error setting breakpoints: ' .. tostring(err1), vim.log.levels.ERROR)
+          utils.notify("Error setting breakpoints: " .. tostring(err1), vim.log.levels.ERROR)
         elseif resp then
           for _, bp in pairs(resp.breakpoints) do
             breakpoints.set_state(bufnr, bp)
             if not bp.verified then
-              log:info('Breakpoint unverified', bp)
+              log:info("Breakpoint unverified", bp)
             end
           end
         end
@@ -1160,7 +1158,7 @@ do
           on_done()
         end
       end
-      self:request('setBreakpoints', payload, on_response)
+      self:request("setBreakpoints", payload, on_response)
     end
   end
 end
@@ -1171,7 +1169,7 @@ function Session:set_exception_breakpoints(filters, exceptionOptions, on_done)
     return
   end
 
-  if filters == 'default' then
+  if filters == "default" then
     local default_filters = {}
     for _, f in pairs(self.capabilities.exceptionBreakpointFilters) do
       if f.default then
@@ -1187,11 +1185,11 @@ function Session:set_exception_breakpoints(filters, exceptionOptions, on_done)
       table.insert(possible_filters, f.filter)
     end
     ---@diagnostic disable-next-line: redundant-parameter, param-type-mismatch
-    filters = vim.split(vim.fn.input("Exception breakpoint filters: ", table.concat(possible_filters, ' ')), ' ')
+    filters = vim.split(vim.fn.input("Exception breakpoint filters: ", table.concat(possible_filters, " ")), " ")
   end
 
   if exceptionOptions and not self.capabilities.supportsExceptionOptions then
-    utils.notify('Debug adapter does not support ExceptionOptions', vim.log.levels.INFO)
+    utils.notify("Debug adapter does not support ExceptionOptions", vim.log.levels.INFO)
     return
   end
 
@@ -1199,18 +1197,18 @@ function Session:set_exception_breakpoints(filters, exceptionOptions, on_done)
   --- filters: string[]
   --- exceptionOptions: exceptionOptions?: ExceptionOptions[] (https://microsoft.github.io/debug-adapter-protocol/specification#Types_ExceptionOptions)
   self:request(
-    'setExceptionBreakpoints',
-    { filters = filters, exceptionOptions = exceptionOptions },
+    "setExceptionBreakpoints",
+    { filters = filters, exceptionOptions = exceptionOptions, filterOptions = {} },
     function(err, _)
       if err then
-        utils.notify('Error setting exception breakpoints: ' .. tostring(err), vim.log.levels.ERROR)
+        utils.notify("Error setting exception breakpoints: " .. tostring(err), vim.log.levels.ERROR)
       end
       if on_done then
         on_done()
       end
-  end)
+    end
+  )
 end
-
 
 ---@param listeners table<string, dap.RequestListener<any>|dap.EventListener<any>>
 local function call_listener(listeners, ...)
@@ -1222,7 +1220,6 @@ local function call_listener(listeners, ...)
   end
 end
 
-
 function Session:handle_body(body)
   local decoded = assert(json_decode(body), "Debug adapter must send JSON objects")
   log:debug(self.id, decoded)
@@ -1233,7 +1230,7 @@ function Session:handle_body(body)
     self.message_requests[decoded.request_seq] = nil
     self.message_callbacks[decoded.request_seq] = nil
     if not callback then
-      log:error('No callback found. Did the debug adapter send duplicate responses?', decoded)
+      log:error("No callback found. Did the debug adapter send duplicate responses?", decoded)
       return
     end
     local err = nil
@@ -1266,21 +1263,20 @@ function Session:handle_body(body)
       local after = listeners.after[callback_name]
       call_listener(after, self, decoded.body)
       if not callback and not next(before) and not next(after) then
-        log:warn('No event handler for ', decoded)
+        log:warn("No event handler for ", decoded)
       end
     end)
-  elseif decoded.type == 'request' then
+  elseif decoded.type == "request" then
     local handler = self.handlers.reverse_requests[decoded.command]
     if handler then
       handler(self, decoded)
     else
-      log:warn('No handler for reverse request', decoded)
+      log:warn("No handler for reverse request", decoded)
     end
   else
-    log:warn('Received unexpected message', decoded)
+    log:warn("Received unexpected message", decoded)
   end
 end
-
 
 ---@param self dap.Session
 local function start_debugging(self, request)
@@ -1288,7 +1284,7 @@ local function start_debugging(self, request)
   coroutine.wrap(function()
     local co = coroutine.running()
     local opts = {
-      filetype = self.filetype
+      filetype = self.filetype,
     }
     local config = body.configuration
     local adapter = dap().adapters[config.type or self.config.type]
@@ -1308,7 +1304,7 @@ local function start_debugging(self, request)
       adapter.executable = nil
     end
 
-    local expected_types = {"executable", "server"}
+    local expected_types = { "executable", "server" }
     if type(adapter) ~= "table" or not vim.tbl_contains(expected_types, adapter.type) then
       local msg = "Invalid adapter definition. Expected a table with type `executable` or `server`: "
       utils.notify(msg .. vim.inspect(adapter), vim.log.levels.ERROR)
@@ -1319,14 +1315,14 @@ local function start_debugging(self, request)
     local function on_child_session(session)
       session.parent = self
       self.children[session.id] = session
-      session.on_close['dap.session.child'] = function(s)
+      session.on_close["dap.session.child"] = function(s)
         if s.parent then
           s.parent.children[s.id] = nil
           s.parent = nil
         end
       end
       session:initialize(config)
-      self:response(request, {success = true})
+      self:response(request, { success = true })
     end
 
     if adapter.type == "executable" then
@@ -1338,12 +1334,15 @@ local function start_debugging(self, request)
       local session
       session = Session.connect(adapter, config, opts, function(err)
         if err then
-          utils.notify(string.format(
-            "Could not connect startDebugging child session %s:%s: %s",
-            adapter.host or '127.0.0.1',
-            adapter.port,
-            err
-          ), vim.log.levels.WARN)
+          utils.notify(
+            string.format(
+              "Could not connect startDebugging child session %s:%s: %s",
+              adapter.host or "127.0.0.1",
+              adapter.port,
+              err
+            ),
+            vim.log.levels.WARN
+          )
         elseif session then
           on_child_session(session)
         end
@@ -1351,7 +1350,6 @@ local function start_debugging(self, request)
     end
   end)()
 end
-
 
 local default_reverse_request_handlers = {
   runInTerminal = run_in_terminal,
@@ -1367,15 +1365,12 @@ local next_session_id = 1
 local function new_session(adapter, config, opts, handle)
   local handlers = {}
   handlers.after = opts.after
-  handlers.reverse_requests = vim.tbl_extend(
-    'error',
-    default_reverse_request_handlers,
-    adapter.reverse_request_handlers or {}
-  )
+  handlers.reverse_requests =
+    vim.tbl_extend("error", default_reverse_request_handlers, adapter.reverse_request_handlers or {})
   local ns = ns_pool.acquire()
   local state = {
     id = next_session_id,
-    handlers = handlers;
+    handlers = handlers,
     message_callbacks = {},
     message_requests = {},
     initialized = false,
@@ -1388,7 +1383,7 @@ local function new_session(adapter, config, opts, handle)
     capabilities = {},
     filetype = opts.filetype or vim.bo.filetype,
     ns = ns,
-    sign_group = 'dap-' .. tostring(ns),
+    sign_group = "dap-" .. tostring(ns),
     closed = false,
     on_close = {},
     children = {},
@@ -1399,26 +1394,26 @@ local function new_session(adapter, config, opts, handle)
     path_to_source_ref = {}, -- Maps path -> sourceReference
     _reapply_bps_pending = false,
   }
-  
+
   -- Add stackTrace listener to capture sourceReferences from stack frames
-  local dap = require('dap')
-  local session_id = 'session_' .. next_session_id
+  local dap = require("dap")
+  local session_id = "session_" .. next_session_id
   dap.listeners.after.stackTrace[session_id] = function(session, err, response)
     if not err and response and response.stackFrames then
       for _, frame in ipairs(response.stackFrames) do
         if frame.source and frame.source.sourceReference and frame.source.sourceReference ~= 0 then
           local source = frame.source
           local clean_path = source.path
-          
+
           -- Handle file:// URIs by converting to regular paths
-          if clean_path and clean_path:match('^file://') then
-            clean_path = clean_path:gsub('^file://', '')
-            log:debug('Converted file URI to path: ' .. source.path .. ' -> ' .. clean_path)
+          if clean_path and clean_path:match("^file://") then
+            clean_path = clean_path:gsub("^file://", "")
+            log:debug("Converted file URI to path: " .. source.path .. " -> " .. clean_path)
           end
-          
+
           session.source_references[source.sourceReference] = {
             path = clean_path,
-            name = source.name
+            name = source.name,
           }
           if clean_path then
             session.path_to_source_ref[clean_path] = source.sourceReference
@@ -1428,7 +1423,7 @@ local function new_session(adapter, config, opts, handle)
             session._reapply_bps_pending = true
             vim.defer_fn(function()
               session._reapply_bps_pending = false
-              local bps = require('dap.breakpoints').get()
+              local bps = require("dap.breakpoints").get()
               if next(bps) ~= nil then
                 session:set_breakpoints(bps)
               end
@@ -1438,12 +1433,12 @@ local function new_session(adapter, config, opts, handle)
       end
     end
   end
-  
+
   -- Clean up listener when session closes
   state.on_close[session_id] = function()
     dap.listeners.after.stackTrace[session_id] = nil
   end
-  
+
   function state.client.write(line)
     state.handle:write(line)
   end
@@ -1464,16 +1459,14 @@ local function new_session(adapter, config, opts, handle)
   return setmetatable(state, session_mt)
 end
 
-
 local function get_free_port()
   local tcp = assert(uv.new_tcp(), "Must be able to create tcp client")
-  tcp:bind('127.0.0.1', 0)
+  tcp:bind("127.0.0.1", 0)
   local port = tcp:getsockname().port
   tcp:shutdown()
   tcp:close()
   return port
 end
-
 
 ---@param code integer
 ---@param command string
@@ -1487,7 +1480,6 @@ local function get_badexit_msg(code, command, adapter_name)
     code
   )
 end
-
 
 ---@param err string
 ---@param command string
@@ -1508,7 +1500,6 @@ local function get_spawn_errmsg(err, command, adapter_name)
   end
 end
 
-
 --- Spawn the executable or raise an error if the command doesn't start.
 ---
 --- Adds a on_close hook on the session to terminate the executable once the
@@ -1522,7 +1513,7 @@ local function spawn_server_executable(executable, session)
   local stdout = assert(uv.new_pipe(false), "Must be able to create pipe")
   local stderr = assert(uv.new_pipe(false), "Must be able to create pipe")
   local opts = {
-    stdio = {nil, stdout, stderr},
+    stdio = { nil, stdout, stderr },
     args = executable.args or {},
     detached = utils.if_nil(executable.detached, true),
     cwd = executable.cwd,
@@ -1532,7 +1523,7 @@ local function spawn_server_executable(executable, session)
   local stdoutlog = daplog.create_logger("dap-" .. session.config.type .. "-stdout.log")
   local stderrlog = daplog.create_logger("dap-" .. session.config.type .. "-stderr.log")
   handle, pid_or_err = uv.spawn(cmd, opts, function(code)
-    log:info('Process exit', cmd, code, pid_or_err)
+    log:info("Process exit", cmd, code, pid_or_err)
     if handle then
       handle:close()
     end
@@ -1578,7 +1569,6 @@ local function spawn_server_executable(executable, session)
   end
 end
 
-
 ---@param adapter dap.PipeAdapter
 ---@param opts? table
 ---@param config dap.Configuration
@@ -1603,13 +1593,12 @@ function Session.pipe(adapter, config, opts, on_connect)
       if adapter.executable.args then
         local args = assert(adapter.executable.args)
         for idx, arg in pairs(args) do
-          args[idx] = arg:gsub('${pipe}', filepath)
+          args[idx] = arg:gsub("${pipe}", filepath)
         end
       end
     end
     spawn_server_executable(adapter.executable, session)
-    log:debug(
-      "Debug adapter server executable started with pipe " .. adapter.pipe)
+    log:debug("Debug adapter server executable started with pipe " .. adapter.pipe)
     -- The adapter should create the pipe
 
     local adapter_opts = adapter.options or {}
@@ -1641,7 +1630,6 @@ function Session.pipe(adapter, config, opts, on_connect)
   return session
 end
 
-
 ---@param adapter dap.ServerAdapter
 ---@param config dap.Configuration
 function Session.connect(adapter, config, opts, on_connect)
@@ -1660,23 +1648,22 @@ function Session.connect(adapter, config, opts, on_connect)
       if adapter.executable.args then
         local args = assert(adapter.executable.args)
         for idx, arg in pairs(args) do
-          args[idx] = arg:gsub('${port}', tostring(port))
+          args[idx] = arg:gsub("${port}", tostring(port))
         end
       end
     end
     spawn_server_executable(adapter.executable, session)
-    log:debug(
-      "Debug adapter server executable started, listening on " .. adapter.port)
+    log:debug("Debug adapter server executable started, listening on " .. adapter.port)
   end
 
-  log:debug('Connecting to debug adapter', adapter)
+  log:debug("Connecting to debug adapter", adapter)
   local max_retries = (adapter.options or {}).max_retries or 14
 
-  local host = adapter.host or '127.0.0.1'
+  local host = adapter.host or "127.0.0.1"
   local on_addresses
   on_addresses = function(err, addresses, retry_count)
     if err or #addresses == 0 then
-      err = err or ('Could not resolve ' .. host)
+      err = err or ("Could not resolve " .. host)
       session:close()
       on_connect(err)
       return
@@ -1711,7 +1698,7 @@ function Session.connect(adapter, config, opts, on_connect)
       client:read_start(rpc.create_read_loop(handle_body, function()
         if not session.closed then
           session:close()
-          utils.notify('Debug adapter disconnected', vim.log.levels.INFO)
+          utils.notify("Debug adapter disconnected", vim.log.levels.INFO)
         end
       end))
       on_connect(nil)
@@ -1721,24 +1708,23 @@ function Session.connect(adapter, config, opts, on_connect)
   -- It should generally work with luv 1.42.0 but some still get errors
   if uv.version() >= 76288 then
     ---@diagnostic disable-next-line: missing-fields
-    local ok, err = pcall(uv.getaddrinfo, host, nil, { protocol = 'tcp' }, on_addresses)
+    local ok, err = pcall(uv.getaddrinfo, host, nil, { protocol = "tcp" }, on_addresses)
     if not ok then
       log:warn(err)
-      on_addresses(nil, { { addr = host }, })
+      on_addresses(nil, { { addr = host } })
     end
   else
-    on_addresses(nil, { { addr = host }, })
+    on_addresses(nil, { { addr = host } })
   end
   return session
 end
-
 
 ---@param adapter dap.ExecutableAdapter
 ---@param config dap.Configuration
 ---@param opts table|nil
 ---@return dap.Session?
 function Session.spawn(adapter, config, opts)
-  log:debug('Spawning debug adapter', adapter)
+  log:debug("Spawning debug adapter", adapter)
 
   local handle
   local pid_or_err
@@ -1789,16 +1775,16 @@ function Session.spawn(adapter, config, opts)
 
   local options = adapter.options or {}
   local spawn_opts = {
-    args = adapter.args;
-    stdio = {stdin, stdout, stderr};
-    cwd = options.cwd;
-    env = options.env;
-    detached = utils.if_nil(options.detached, true);
+    args = adapter.args,
+    stdio = { stdin, stdout, stderr },
+    cwd = options.cwd,
+    env = options.env,
+    detached = utils.if_nil(options.detached, true),
   }
   local session
   local stderrlog = require("dap.log").create_logger("dap-" .. config.type .. "-stderr.log")
   handle, pid_or_err = uv.spawn(adapter.command, spawn_opts, function(code)
-    log:info('Process exit', adapter.command, code, pid_or_err)
+    log:info("Process exit", adapter.command, code, pid_or_err)
     onexit()
     if code == 0 then
       stderrlog:remove()
@@ -1841,16 +1827,15 @@ function Session.spawn(adapter, config, opts)
   return session
 end
 
-
 local function pause_thread(session, thread_id, cb)
-  assert(session, 'Cannot pause thread without active session')
-  assert(thread_id, 'thread_id is required to pause thread')
+  assert(session, "Cannot pause thread without active session")
+  assert(thread_id, "thread_id is required to pause thread")
 
-  session:request('pause', { threadId = thread_id; }, function(err)
+  session:request("pause", { threadId = thread_id }, function(err)
     if err then
-      utils.notify('Error pausing: ' .. tostring(err), vim.log.levels.ERROR)
+      utils.notify("Error pausing: " .. tostring(err), vim.log.levels.ERROR)
     else
-      utils.notify('Thread paused ' .. thread_id, vim.log.levels.INFO)
+      utils.notify("Thread paused " .. thread_id, vim.log.levels.INFO)
       local thread = session.threads[thread_id]
       if thread then
         thread.stopped = true
@@ -1862,7 +1847,6 @@ local function pause_thread(session, thread_id, cb)
   end)
 end
 
-
 function Session:_pause(thread_id, cb)
   if thread_id then
     pause_thread(self, thread_id, cb)
@@ -1871,46 +1855,41 @@ function Session:_pause(thread_id, cb)
   if self.dirty.threads then
     self:update_threads(function(err)
       if err then
-        utils.notify('Error requesting threads: ' .. tostring(err), vim.log.levels.ERROR)
+        utils.notify("Error requesting threads: " .. tostring(err), vim.log.levels.ERROR)
         return
       end
       self:_pause(nil, cb)
     end)
     return
   end
-  ui().pick_if_many(
-    vim.tbl_values(self.threads),
-    "Which thread?: ",
-    function(t) return t.name end,
-    function(thread)
-      if not thread or not thread.id then
-        utils.notify('No thread to stop. Not pausing...', vim.log.levels.INFO)
-      else
-        pause_thread(self, thread.id, cb)
-      end
+  ui().pick_if_many(vim.tbl_values(self.threads), "Which thread?: ", function(t)
+    return t.name
+  end, function(thread)
+    if not thread or not thread.id then
+      utils.notify("No thread to stop. Not pausing...", vim.log.levels.INFO)
+    else
+      pause_thread(self, thread.id, cb)
     end
-  )
+  end)
 end
-
 
 function Session:restart_frame()
   if not self.capabilities.supportsRestartFrame then
-    utils.notify('Debug Adapter does not support restart frame', vim.log.levels.INFO)
+    utils.notify("Debug Adapter does not support restart frame", vim.log.levels.INFO)
     return
   end
   local frame = self.current_frame
   if not frame then
-    local msg = 'Current frame not set. Debug adapter needs to be stopped at breakpoint to use restart frame'
+    local msg = "Current frame not set. Debug adapter needs to be stopped at breakpoint to use restart frame"
     utils.notify(msg, vim.log.levels.INFO)
     return
   end
   coroutine.wrap(function()
     if frame.canRestart == false then
       local thread = self.threads[self.stopped_thread_id] or {}
-      local frames = vim.tbl_filter(
-        function(f) return f.canRestart == nil or f.canRestart == true end,
-        thread.frames or {}
-      )
+      local frames = vim.tbl_filter(function(f)
+        return f.canRestart == nil or f.canRestart == true
+      end, thread.frames or {})
       if not next(frames) then
         utils.notify("No frame available that can be restarted", vim.log.levels.WARN)
         return
@@ -1918,20 +1897,19 @@ function Session:restart_frame()
       frame = ui().pick_one(
         frames,
         "Can't restart current frame, pick another frame to restart: ",
-        require('dap.entity').frames.render_item
+        require("dap.entity").frames.render_item
       )
       if not frame then
         return
       end
     end
     clear_running(self)
-    local err = self:request('restartFrame', { frameId = frame.id })
+    local err = self:request("restartFrame", { frameId = frame.id })
     if err then
-      utils.notify('Error on restart_frame: ' .. tostring(err), vim.log.levels.ERROR)
+      utils.notify("Error on restart_frame: " .. tostring(err), vim.log.levels.ERROR)
     end
   end)()
 end
-
 
 ---@param step "next"|"stepIn"|"stepOut"|"stepBack"|"continue"|"reverseContinue"
 ---@param params table|nil
@@ -1941,11 +1919,11 @@ function Session:_step(step, params)
     if count > 0 then
       local listeners = dap().listeners
       local clear_listeners = function()
-        listeners.after.event_stopped['dap.step'] = nil
-        listeners.after.event_terminated['dap.step'] = nil
-        listeners.after.disconnect['dap.step'] = nil
+        listeners.after.event_stopped["dap.step"] = nil
+        listeners.after.event_terminated["dap.step"] = nil
+        listeners.after.disconnect["dap.step"] = nil
       end
-      listeners.after.event_stopped['dap.step'] = function()
+      listeners.after.event_stopped["dap.step"] = function()
         if count > 0 then
           count = count - 1
           step_thread(thread_id)
@@ -1953,8 +1931,8 @@ function Session:_step(step, params)
           clear_listeners()
         end
       end
-      listeners.after.event_terminated['dap.step'] = clear_listeners
-      listeners.after.disconnect['dap.step'] = clear_listeners
+      listeners.after.event_terminated["dap.step"] = clear_listeners
+      listeners.after.disconnect["dap.step"] = clear_listeners
     end
     params = params or {}
     params.threadId = thread_id
@@ -1964,36 +1942,31 @@ function Session:_step(step, params)
     clear_running(self, thread_id)
     self:request(step, params, function(err)
       if err then
-        utils.notify('Error on '.. step .. ': ' .. tostring(err), vim.log.levels.ERROR)
+        utils.notify("Error on " .. step .. ": " .. tostring(err), vim.log.levels.ERROR)
       end
-      progress.report('Running')
+      progress.report("Running")
     end)
   end
 
   if self.stopped_thread_id then
     step_thread(self.stopped_thread_id)
   else
-    local paused_threads = vim.tbl_filter(
-      function(t) return t.stopped end,
-      vim.tbl_values(self.threads)
-    )
+    local paused_threads = vim.tbl_filter(function(t)
+      return t.stopped
+    end, vim.tbl_values(self.threads))
     if not next(paused_threads) then
-      utils.notify('No stopped threads. Cannot move', vim.log.levels.ERROR)
+      utils.notify("No stopped threads. Cannot move", vim.log.levels.ERROR)
       return
     end
-    ui().pick_if_many(
-      paused_threads,
-      "Select thread to step in> ",
-      function(t) return t.name end,
-      function(thread)
-        if thread then
-          step_thread(thread.id)
-        end
+    ui().pick_if_many(paused_threads, "Select thread to step in> ", function(t)
+      return t.name
+    end, function(thread)
+      if thread then
+        step_thread(thread.id)
       end
-    )
+    end)
   end
 end
-
 
 function Session:close()
   self.closed = true
@@ -2027,7 +2000,6 @@ function Session:close()
   end)
 end
 
-
 function Session:request_with_timeout(command, arguments, timeout_ms, callback)
   local cb_triggered = false
   local timed_out = false
@@ -2047,7 +2019,7 @@ function Session:request_with_timeout(command, arguments, timeout_ms, callback)
     timer:close()
     timed_out = true
     if not cb_triggered then
-      local err = { message = 'Request `' .. command .. '` timed out after ' .. timeout_ms .. 'ms' }
+      local err = { message = "Request `" .. command .. "` timed out after " .. timeout_ms .. "ms" }
       if callback then
         vim.schedule(function()
           callback(err, nil)
@@ -2058,7 +2030,6 @@ function Session:request_with_timeout(command, arguments, timeout_ms, callback)
     end
   end)
 end
-
 
 --- Send a request to the debug adapter
 ---
@@ -2073,11 +2044,11 @@ end
 function Session:request(command, arguments, on_result)
   local payload = {
     seq = self.seq,
-    type = 'request',
+    type = "request",
     command = command,
     arguments = arguments,
   }
-  log:debug('request', payload)
+  log:debug("request", payload)
   local current_seq = self.seq
   self.seq = self.seq + 1
   local co, is_main
@@ -2088,8 +2059,7 @@ function Session:request(command, arguments, on_result)
     else
       -- Assume missing callback is intentional.
       -- Prevent error logging in Session:handle_body
-      on_result = function(_, _)
-      end
+      on_result = function(_, _) end
     end
   end
   self.message_callbacks[current_seq] = on_result
@@ -2100,17 +2070,15 @@ function Session:request(command, arguments, on_result)
   end
 end
 
-
 function Session:response(request, payload)
   payload.seq = self.seq
   self.seq = self.seq + 1
-  payload.type = 'response'
-  payload.request_seq = request.seq;
-  payload.command = request.command;
-  log:debug('response', payload)
+  payload.type = "response"
+  payload.request_seq = request.seq
+  payload.command = request.command
+  log:debug("response", payload)
   send_payload(self.client, payload)
 end
-
 
 --- Initialize the debug session
 ---@param config dap.Configuration
@@ -2122,33 +2090,33 @@ function Session:initialize(config)
   ---@param result dap.Capabilities?
   local function on_initialize(err0, result)
     if err0 then
-      utils.notify('Could not initialize debug adapter: ' .. tostring(err0), vim.log.levels.ERROR)
+      utils.notify("Could not initialize debug adapter: " .. tostring(err0), vim.log.levels.ERROR)
       adapter_responded = true
       return
     end
-    self.capabilities = vim.tbl_extend('force', self.capabilities, result or {})
+    self.capabilities = vim.tbl_extend("force", self.capabilities, result or {})
     self:request(config.request, config, function(err)
       adapter_responded = true
       if err then
-        utils.notify(string.format('Error on %s: %s', config.request, err), vim.log.levels.ERROR)
+        utils.notify(string.format("Error on %s: %s", config.request, err), vim.log.levels.ERROR)
         self:close()
       end
     end)
   end
   local params = {
-    clientID = 'neovim';
-    clientName = 'neovim';
-    adapterID = self.adapter.id or 'nvim-dap';
-    pathFormat = 'path';
-    columnsStartAt1 = true;
-    linesStartAt1 = true;
-    supportsRunInTerminalRequest = true;
-    supportsVariableType = true;
+    clientID = "neovim",
+    clientName = "neovim",
+    adapterID = self.adapter.id or "nvim-dap",
+    pathFormat = "path",
+    columnsStartAt1 = true,
+    linesStartAt1 = true,
+    supportsRunInTerminalRequest = true,
+    supportsVariableType = true,
     supportsProgressReporting = true,
     supportsStartDebuggingRequest = true,
-    locale = os.getenv('LANG') or 'en_US';
+    locale = os.getenv("LANG") or "en_US",
   }
-  self:request('initialize', params, on_initialize)
+  self:request("initialize", params, on_initialize)
   local adapter = self.adapter
   local sec_to_wait = (adapter.options or {}).initialize_timeout_sec or 4
   local timer = assert(uv.new_timer(), "Must be able to create timer")
@@ -2159,17 +2127,19 @@ function Session:initialize(config)
       vim.schedule(function()
         utils.notify(
           string.format(
-            ("Debug adapter didn't respond. "
+            (
+              "Debug adapter didn't respond. "
               .. "Either the adapter is slow (then wait and ignore this) "
-              .. "or there is a problem with your adapter or `%s` configuration. Check the logs for errors (:help dap.set_log_level)"),
-            config.type),
-            vim.log.levels.WARN
-          )
+              .. "or there is a problem with your adapter or `%s` configuration. Check the logs for errors (:help dap.set_log_level)"
+            ),
+            config.type
+          ),
+          vim.log.levels.WARN
+        )
       end)
     end
   end)
 end
-
 
 ---@param args string|dap.EvaluateArguments expression as string, or evaluate arguments
 ---@param fn fun(err?: dap.ErrorResponse, result?: dap.EvaluateResponse)
@@ -2177,29 +2147,27 @@ function Session:evaluate(args, fn)
   if type(args) == "string" then
     args = {
       expression = args,
-      context = "repl"
+      context = "repl",
     }
   end
   args.frameId = args.frameId or (self.current_frame or {}).id
   return self:request("evaluate", args, fn)
 end
 
-
 function Session:disconnect(opts, cb)
-  opts = vim.tbl_extend('force', {
+  opts = vim.tbl_extend("force", {
     restart = false,
-    terminateDebuggee = nil;
+    terminateDebuggee = nil,
   }, opts or {})
   local disconnect_timeout_sec = (self.adapter.options or {}).disconnect_timeout_sec or 3
-  self:request_with_timeout('disconnect', opts, disconnect_timeout_sec * sec_to_ms, function(err, resp)
+  self:request_with_timeout("disconnect", opts, disconnect_timeout_sec * sec_to_ms, function(err, resp)
     self:close()
-    log:info('Session closed due to disconnect')
+    log:info("Session closed due to disconnect")
     if cb then
       cb(err, resp)
     end
   end)
 end
-
 
 ---@param frame? dap.StackFrame
 function Session:_frame_set(frame)
@@ -2213,18 +2181,17 @@ function Session:_frame_set(frame)
   end)()
 end
 
-
 function Session:_frame_delta(delta)
   if not self.stopped_thread_id then
-    utils.notify('Cannot move frame if not stopped', vim.log.levels.ERROR)
+    utils.notify("Cannot move frame if not stopped", vim.log.levels.ERROR)
     return
   end
   local frames = self.threads[self.stopped_thread_id].frames
-  assert(frames, 'Stopped thread must have frames')
+  assert(frames, "Stopped thread must have frames")
   local frameidx = index_of(frames, function(i)
     return i.id == self.current_frame.id
   end)
-  assert(frameidx, 'id of current frame must be present in frames')
+  assert(frameidx, "id of current frame must be present in frames")
 
   frameidx = frameidx + delta
   if frameidx < 1 then
@@ -2237,15 +2204,11 @@ function Session:_frame_delta(delta)
   self:_frame_set(frames[frameidx])
 end
 
+function Session.event_exited() end
 
-function Session.event_exited()
-end
+function Session.event_module() end
 
-function Session.event_module()
-end
-
-function Session.event_process()
-end
+function Session.event_process() end
 
 ---@param event dap.LoadedSourceEvent
 function Session:event_loadedSource(event)
@@ -2253,16 +2216,16 @@ function Session:event_loadedSource(event)
   if source then
     if source.sourceReference and source.sourceReference ~= 0 then
       local clean_path = source.path
-      
+
       -- Handle file:// URIs by converting to regular paths
-      if clean_path and clean_path:match('^file://') then
-        clean_path = clean_path:gsub('^file://', '')
-        log:debug('Converted file URI to path: ' .. source.path .. ' -> ' .. clean_path)
+      if clean_path and clean_path:match("^file://") then
+        clean_path = clean_path:gsub("^file://", "")
+        log:debug("Converted file URI to path: " .. source.path .. " -> " .. clean_path)
       end
-      
+
       self.source_references[source.sourceReference] = {
         path = clean_path,
-        name = source.name
+        name = source.name,
       }
       if clean_path then
         self.path_to_source_ref[clean_path] = source.sourceReference
@@ -2272,7 +2235,7 @@ function Session:event_loadedSource(event)
         self._reapply_bps_pending = true
         vim.defer_fn(function()
           self._reapply_bps_pending = false
-          local bps = require('dap.breakpoints').get()
+          local bps = require("dap.breakpoints").get()
           if next(bps) ~= nil then
             self:set_breakpoints(bps)
           end
@@ -2284,10 +2247,9 @@ function Session:event_loadedSource(event)
   end
 end
 
-
 ---@param event dap.ThreadEvent
 function Session:event_thread(event)
-  if event.reason == 'exited' then
+  if event.reason == "exited" then
     self.threads[event.threadId] = nil
   else
     local thread = self.threads[event.threadId]
@@ -2300,12 +2262,11 @@ function Session:event_thread(event)
       self.dirty.threads = true
       self.threads[event.threadId] = {
         id = event.threadId,
-        name = 'Unknown'
+        name = "Unknown",
       }
     end
   end
 end
-
 
 ---@param event dap.ContinuedEvent
 function Session:event_continued(event)
@@ -2327,15 +2288,14 @@ function Session:event_continued(event)
   end
 end
 
-
 ---@param event dap.BreakpointEvent
 function Session.event_breakpoint(session, event)
-  if event.reason == 'changed' then
+  if event.reason == "changed" then
     local bp = event.breakpoint
     if bp.id then
       breakpoints.update(bp)
     end
-  elseif event.reason == 'new' then
+  elseif event.reason == "new" then
     local bp = event.breakpoint
     if bp.id then
       local bufnr = source_to_bufnr(session, bp.source)
@@ -2344,7 +2304,7 @@ function Session.event_breakpoint(session, event)
         breakpoints.set_state(bufnr, bp)
       end
     end
-  elseif event.reason == 'removed' then
+  elseif event.reason == "removed" then
     local bp = event.breakpoint
     if bp.id then
       breakpoints.remove_by_id(bp.id)
@@ -2352,16 +2312,14 @@ function Session.event_breakpoint(session, event)
   end
 end
 
-
 function Session:event_capabilities(body)
-  self.capabilities = vim.tbl_extend('force', self.capabilities, body.capabilities)
+  self.capabilities = vim.tbl_extend("force", self.capabilities, body.capabilities)
 end
-
 
 ---@param body dap.ProgressStartEvent
 function Session.event_progressStart(_, body)
   if body.message then
-    progress.report(body.title .. ': ' .. body.message)
+    progress.report(body.title .. ": " .. body.message)
   else
     progress.report(body.title)
   end
@@ -2379,9 +2337,8 @@ function Session:event_progressEnd(body)
   if body.message then
     progress.report(body.message)
   else
-    progress.report('Running: ' .. (self.config.name or '[No Name]'))
+    progress.report("Running: " .. (self.config.name or "[No Name]"))
   end
 end
-
 
 return Session
